@@ -1,0 +1,25 @@
+# clients.conf
+#
+# Een regel per klant. Velden gescheiden door een komma, geen spaties rond de komma's.
+# Regels die beginnen met # of lege regels worden genegeerd.
+#
+# Velden:
+#   1. CLIENT_NAME       vrije naam, alleen voor logging (geen komma's)
+#   2. FIREWALL_HOST      FortiGate API base URL, bv. https://10.0.103.254:8443
+#   3. API_TOKEN          FortiGate API token (evt. base64, zie veld 4)
+#   4. BASE64             yes/no - is API_TOKEN base64-encoded?
+#   5. ITGLUE_API_KEY     IT Glue API key (ITG.xxxx...) - optioneel, zie hieronder
+#   6. ITGLUE_DOCUMENT_ID IT Glue document ID waar het backupbestand naartoe moet - optioneel
+#   7. OUTPUT_DIR         map waar backups voor deze klant lokaal worden opgeslagen
+#
+# Velden 5 en 6 zijn optioneel: laat ze leeg of vul "-" in zolang IT Glue upload
+# nog niet gebruikt wordt. De backup wordt dan alleen lokaal in OUTPUT_DIR gezet
+# en run_all_clients.sh slaat de upload-stap over. Vul ze later gewoon in om
+# uploaden voor die klant aan te zetten, zonder dat scripts hoeven te wijzigen.
+#
+# Kopieer dit bestand naar clients.conf, vul de echte waarden in en zet
+# strikte rechten: chmod 600 clients.conf (bevat API keys/tokens in leesbare tekst).
+#
+# Voorbeeldregels:
+# KlantA,https://10.0.103.254:8443,myEncodedTokenA,yes,-,-,/home/justin/backups/klanta
+# KlantB,https://10.10.20.1:8443,myPlainTokenB,no,ITG.yyyyyyyyyyyy,222222,/home/justin/backups/klantb
