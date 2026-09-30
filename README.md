@@ -40,17 +40,30 @@ Re-running `install.sh` at any time lets you update the client config or resched
 
 ## FortiGate API access
 
-Create a dedicated API admin on the FortiGate, scoped to read-only, restricted to the probe's IP:
+Create a dedicated API admin on the FortiGate, restricted to the probe's IP, with the minimum profile that actually works for config backup:
 
 1. **System → Administrators → Create New → REST API Admin**
-2. Assign a **read-only** admin profile.
-3. **Trusted Hosts**: set to the probe's IP, e.g. `10.0.123.174/32`.
+2. Assign an admin profile with:
+   - **System** set to **Custom**, with only the **Administrator Users** sub-permission set to **Read/Write**. The other System sub-permissions — **Configuration**, **FortiGuard Updates**, **Maintenance** — can stay at **Read**. (A blanket `Read` on the whole System category gets a `403` on the backup endpoint even though "backup" is conceptually a read-only action — this is documented Fortinet behavior, not a bug in these scripts. Setting the whole category to `Read/Write` also works but is broader than necessary.)
+   - Every other category (Firewall, Network, VPN, Log & Report, Security Fabric, User & Device, WiFi & Switch, FortiView, etc.) can stay at **Read**.
+   - There's no need to use the built-in `super_admin` profile — the above is the least-privilege profile confirmed to work.
+3. **Trusted Hosts**: set this to the probe's IP, e.g. `10.0.123.174/32`. **Do not leave this empty** — unlike a regular GUI admin account, a REST API admin with no Trusted Host configured gets every request rejected with `403`, regardless of a valid token.
 4. Save — the API token is shown **once**. Copy it immediately.
 5. Make sure HTTPS admin access is enabled on the interface the probe reaches.
 
 Paste the raw token when `install.sh` asks for it (don't check "base64 encoded" unless you deliberately encoded it yourself).
 
-> **Firmware note:** on FortiOS 7.6.x, the config backup endpoint requires `POST` with a JSON body (`{"destination":"file","file_format":"fos","scope":"global"}`), not the `GET` with query-string params used by older API docs/examples. `FortinetConfigBackupv1.sh` already does this. If you hit `HTTP 405` on a different firmware version, capture the real request FortiOS' own GUI sends (browser dev tools → Network tab, trigger a manual **System → Configuration → Backup**) and compare.
+> **Firmware note:** on FortiOS 7.4.x/7.6.x, the config backup endpoint requires `POST` with a JSON body (`{"destination":"file","file_format":"fos","scope":"global"}`), not the `GET` with query-string params used by older API docs/examples. `FortinetConfigBackupv1.sh` already does this. If you hit `HTTP 405` on a different firmware version, capture the real request FortiOS' own GUI sends (browser dev tools → Network tab, trigger a manual **System → Configuration → Backup**) and compare.
+
+> **Troubleshooting 403:** in order of likelihood — (1) Trusted Hosts not set on the API admin, (2) System → Administrator Users not set to `Read/Write`, (3) some other category missing `Read`. The response body from a manual `curl` test (see below) sometimes gives a bit more detail than the plain HTTP status.
+>
+> ```bash
+> curl -k -X POST -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+>   -d '{"destination":"file","file_format":"fos","scope":"global"}' \
+>   "https://<firewall-host>:8443/api/v2/monitor/system/config/backup" \
+>   -o /tmp/test.conf -w "\nHTTP:%{http_code}\n"
+> cat /tmp/test.conf
+> ```
 
 ## clients.conf format
 
