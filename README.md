@@ -7,7 +7,7 @@ Backs up FortiGate configurations locally on a Debian probe, on a schedule, for 
 1. **`FortinetConfigBackupv1.sh`** — calls the FortiGate REST API to export the full running configuration (`POST /api/v2/monitor/system/config/backup`) and saves it locally with a timestamped filename. Keeps the last 7 backups per client, deletes older ones.
 2. **`FortinetConfigUloadToITGlue.sh`** — uploads the most recent file in a folder as an attachment to an IT Glue document (EU pod). Not required — only runs for clients that have IT Glue credentials configured.
 3. **`run_all_clients.sh`** — reads `clients.conf` and runs the backup (and, if configured, the upload) for every client listed. One client failing doesn't stop the others.
-4. **`install.sh`** — installs everything to `/opt/fortibackup` on a Debian probe, interactively asks for the client's FortiGate/IT Glue details, and sets up a daily cron job + log rotation.
+4. **`install.sh`** — installs everything to `/opt/fortibackup` on a Debian probe, walks through the client's FortiGate/IT Glue details in a `whiptail` text UI, and sets up a daily cron job + log rotation.
 5. **`bootstrap.sh`** — one-command entry point that downloads this repo and runs `install.sh`.
 
 Each probe is normally deployed for **one client**, but `clients.conf` supports multiple lines if you ever need to run several clients from one probe.
@@ -20,7 +20,7 @@ On a fresh Debian probe, as a user with `sudo` rights:
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/jus3211/Fortibackup/main/bootstrap.sh)"
 ```
 
-This downloads the repo, installs dependencies (`curl`, `python3`, `cron`), copies the scripts to `/opt/fortibackup`, and walks you through an interactive setup:
+This downloads the repo, installs dependencies (`curl`, `python3`, `cron`, `whiptail`), copies the scripts to `/opt/fortibackup`, and walks you through a text-UI setup wizard:
 
 - Client name
 - FortiGate API base URL and API token (see [FortiGate API access](#fortigate-api-access) below)

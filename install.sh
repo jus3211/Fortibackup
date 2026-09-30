@@ -3,9 +3,9 @@
 # install.sh
 #
 # Installer voor de Fortibackup tooling op een Debian probe.
-# Zet scripts + config neer in /opt/fortibackup, vraagt interactief de
-# klantgegevens (1 klant per probe) en zet een cronjob op die de backup +
-# IT Glue upload periodiek uitvoert.
+# Zet scripts + config neer in /opt/fortibackup, vraagt via een tekst-UI
+# (whiptail) de klantgegevens (1 klant per probe) op en zet een cronjob op
+# die de backup + IT Glue upload periodiek uitvoert.
 #
 # Usage: sudo ./install.sh
 
@@ -16,6 +16,10 @@ LOG_DIR="/var/log/fortibackup"
 CRON_FILE="/etc/cron.d/fortibackup"
 LOGROTATE_FILE="/etc/logrotate.d/fortibackup"
 SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+
+WT_BACKTITLE="Fortibackup Installer"
+WT_H=10
+WT_W=72
 
 # ---------------------------------------------------------------------------
 # Voorwaarden
@@ -34,14 +38,15 @@ for f in FortinetConfigBackupv1.sh FortinetConfigUloadToITGlue.sh run_all_client
 done
 
 # ---------------------------------------------------------------------------
-# Dependencies
+# Dependencies (plain terminal output - apt output hoort niet in een dialog)
 # ---------------------------------------------------------------------------
 
 echo "▶️  Controleren van benodigde pakketten..."
 missing_pkgs=()
-command -v curl    >/dev/null 2>&1 || missing_pkgs+=("curl")
-command -v python3 >/dev/null 2>&1 || missing_pkgs+=("python3")
+command -v curl     >/dev/null 2>&1 || missing_pkgs+=("curl")
+command -v python3  >/dev/null 2>&1 || missing_pkgs+=("python3")
 command -v crontab  >/dev/null 2>&1 || missing_pkgs+=("cron")
+command -v whiptail >/dev/null 2>&1 || missing_pkgs+=("whiptail")
 
 if (( ${#missing_pkgs[@]} > 0 )); then
     echo "📦 Ontbrekende pakketten worden geïnstalleerd: ${missing_pkgs[*]}"
@@ -51,11 +56,67 @@ else
     echo "✅ Alle benodigde pakketten zijn al aanwezig."
 fi
 
+if [[ ! -t 0 || ! -t 1 ]]; then
+    echo "❌ Deze installer heeft een interactieve terminal nodig (voor de tekst-UI)." >&2
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# TUI helpers
+# ---------------------------------------------------------------------------
+
+wt_abort() {
+    clear
+    echo "❌ Installatie geannuleerd." >&2
+    exit 1
+}
+
+wt_msg() {
+    whiptail --backtitle "$WT_BACKTITLE" --title "$1" --msgbox "$2" "$WT_H" "$WT_W"
+}
+
+wt_yesno() {
+    whiptail --backtitle "$WT_BACKTITLE" --title "$1" --yesno "$2" "$WT_H" "$WT_W"
+}
+
+# $1=title $2=prompt $3=default -> prints answer on stdout, aborts on Cancel/Esc
+wt_input() {
+    whiptail --backtitle "$WT_BACKTITLE" --title "$1" --inputbox "$2" "$WT_H" "$WT_W" "$3" 3>&1 1>&2 2>&3 || wt_abort
+}
+
+# $1=title $2=prompt -> prints answer on stdout, aborts on Cancel/Esc
+wt_password() {
+    whiptail --backtitle "$WT_BACKTITLE" --title "$1" --passwordbox "$2" "$WT_H" "$WT_W" 3>&1 1>&2 2>&3 || wt_abort
+}
+
+# $1=title $2=prompt $3=default -> loops until non-empty
+wt_input_required() {
+    local title="$1" prompt="$2" default="${3-}" val
+    val="$(wt_input "$title" "$prompt" "$default")"
+    while [[ -z "$val" ]]; do
+        wt_msg "Verplicht" "Dit veld mag niet leeg zijn."
+        val="$(wt_input "$title" "$prompt" "$default")"
+    done
+    printf '%s' "$val"
+}
+
+# $1=title $2=prompt -> loops until non-empty
+wt_password_required() {
+    local title="$1" prompt="$2" val
+    val="$(wt_password "$title" "$prompt")"
+    while [[ -z "$val" ]]; do
+        wt_msg "Verplicht" "Dit veld mag niet leeg zijn."
+        val="$(wt_password "$title" "$prompt")"
+    done
+    printf '%s' "$val"
+}
+
+wt_msg "Welkom" "Fortibackup installer\n\nDeze wizard installeert de backup-scripts naar $INSTALL_DIR, vraagt de klantgegevens op en zet een dagelijkse cronjob op.\n\nGebruik Tab om tussen velden/knoppen te wisselen, Enter om te bevestigen."
+
 # ---------------------------------------------------------------------------
 # Scripts installeren
 # ---------------------------------------------------------------------------
 
-echo "▶️  Installeren naar $INSTALL_DIR..."
 mkdir -p -- "$INSTALL_DIR"
 install -m 0755 "$SOURCE_DIR/FortinetConfigBackupv1.sh"       "$INSTALL_DIR/FortinetConfigBackupv1.sh"
 install -m 0755 "$SOURCE_DIR/FortinetConfigUloadToITGlue.sh"  "$INSTALL_DIR/FortinetConfigUloadToITGlue.sh"
@@ -66,73 +127,52 @@ mkdir -p -- "$LOG_DIR"
 chmod 0750 "$LOG_DIR"
 
 # ---------------------------------------------------------------------------
-# Klantgegevens interactief opvragen
+# Klantgegevens
 # ---------------------------------------------------------------------------
 
 CONFIG_FILE="$INSTALL_DIR/clients.conf"
+SKIP_CONFIG=""
 
 if [[ -f "$CONFIG_FILE" ]]; then
-    echo "⚠️  Er bestaat al een clients.conf in $INSTALL_DIR."
-    read -rp "Overschrijven met nieuwe klantgegevens? (bestaand bestand wordt gebackupt) [y/N]: " overwrite
-    if [[ ! "$overwrite" =~ ^[Yy]$ ]]; then
-        echo "ℹ️  clients.conf ongewijzigd gelaten."
-        SKIP_CONFIG=1
-    else
+    if wt_yesno "clients.conf bestaat al" "Er bestaat al een clients.conf in $INSTALL_DIR.\n\nOverschrijven met nieuwe klantgegevens? (het bestaande bestand wordt eerst gebackupt)"; then
         cp -- "$CONFIG_FILE" "${CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    else
+        SKIP_CONFIG=1
     fi
 fi
 
-if [[ -z "${SKIP_CONFIG-}" ]]; then
-    echo ""
-    echo "==== Klantgegevens voor deze probe ===="
-
+if [[ -z "$SKIP_CONFIG" ]]; then
     default_name="$(hostname)"
-    read -rp "Klantnaam [$default_name]: " CLIENT_NAME
+    CLIENT_NAME="$(wt_input "Klantgegevens (1/6)" "Klantnaam:" "$default_name")"
     CLIENT_NAME="${CLIENT_NAME:-$default_name}"
     CLIENT_NAME="${CLIENT_NAME//,/}"   # komma's zijn het veldscheidingsteken
 
-    read -rp "FortiGate API base URL (bv. https://10.0.103.254:8443): " FIREWALL_HOST
-    while [[ -z "$FIREWALL_HOST" ]]; do
-        read -rp "  → verplicht, opnieuw invoeren: " FIREWALL_HOST
-    done
+    FIREWALL_HOST="$(wt_input_required "Klantgegevens (2/6)" "FortiGate API base URL:\n(bv. https://10.0.103.254:8443)" "")"
 
-    read -rsp "FortiGate API token: " API_TOKEN
-    echo ""
-    while [[ -z "$API_TOKEN" ]]; do
-        read -rsp "  → verplicht, opnieuw invoeren: " API_TOKEN
-        echo ""
-    done
+    API_TOKEN="$(wt_password_required "Klantgegevens (3/6)" "FortiGate API token:\n(invoer blijft verborgen)")"
 
-    read -rp "Is dit token base64-encoded? [y/N]: " base64_answer
-    if [[ "$base64_answer" =~ ^[Yy]$ ]]; then
+    if wt_yesno "Klantgegevens (4/6)" "Is dit FortiGate API token base64-encoded?"; then
         BASE64_FLAG="yes"
     else
         BASE64_FLAG="no"
     fi
 
-    read -rp "IT Glue upload nu al instellen voor deze klant? [y/N]: " itglue_answer
-    if [[ "$itglue_answer" =~ ^[Yy]$ ]]; then
-        read -rsp "IT Glue API key: " ITGLUE_API_KEY
-        echo ""
-        while [[ -z "$ITGLUE_API_KEY" ]]; do
-            read -rsp "  → verplicht, opnieuw invoeren: " ITGLUE_API_KEY
-            echo ""
-        done
+    if wt_yesno "Klantgegevens (5/6)" "IT Glue upload nu al instellen voor deze klant?\n\n(Kies Nee om voorlopig alleen lokaal te backuppen - dit kan later alsnog via clients.conf of door install.sh opnieuw te draaien.)"; then
+        ITGLUE_API_KEY="$(wt_password_required "IT Glue" "IT Glue API key:\n(invoer blijft verborgen)")"
 
-        read -rp "IT Glue document ID: " ITGLUE_DOCUMENT_ID
+        ITGLUE_DOCUMENT_ID="$(wt_input_required "IT Glue" "IT Glue document ID:" "")"
         while [[ ! "$ITGLUE_DOCUMENT_ID" =~ ^[0-9]+$ ]]; do
-            read -rp "  → moet numeriek zijn, opnieuw invoeren: " ITGLUE_DOCUMENT_ID
+            wt_msg "Ongeldig" "Document ID moet numeriek zijn."
+            ITGLUE_DOCUMENT_ID="$(wt_input_required "IT Glue" "IT Glue document ID:" "")"
         done
     else
         ITGLUE_API_KEY="-"
         ITGLUE_DOCUMENT_ID="-"
-        echo "ℹ️  IT Glue upload overgeslagen. Backups blijven voorlopig lokaal op $INSTALL_DIR/backups staan."
-        echo "    Vul dit later in door $CONFIG_FILE handmatig aan te passen (velden 5 en 6) of install.sh opnieuw te draaien."
     fi
 
     safe_name="$(echo "$CLIENT_NAME" | tr -c 'A-Za-z0-9_-' '_')"
     default_output="$INSTALL_DIR/backups/$safe_name"
-    read -rp "Lokale backupmap [$default_output]: " OUTPUT_DIR
+    OUTPUT_DIR="$(wt_input "Klantgegevens (6/6)" "Lokale backupmap:" "$default_output")"
     OUTPUT_DIR="${OUTPUT_DIR:-$default_output}"
     mkdir -p -- "$OUTPUT_DIR"
 
@@ -142,25 +182,26 @@ if [[ -z "${SKIP_CONFIG-}" ]]; then
 
     chmod 0600 "$CONFIG_FILE"
     chown root:root "$CONFIG_FILE"
-    echo "✅ clients.conf geschreven naar $CONFIG_FILE (chmod 600)."
 fi
 
 # ---------------------------------------------------------------------------
 # Cronjob opzetten
 # ---------------------------------------------------------------------------
 
-echo ""
-echo "==== Scheduling ===="
-read -rp "Uur voor dagelijkse run (0-23) [2]: " CRON_HOUR
+CRON_HOUR="$(wt_input "Scheduling (1/2)" "Uur voor dagelijkse run (0-23):" "2")"
 CRON_HOUR="${CRON_HOUR:-2}"
 while [[ ! "$CRON_HOUR" =~ ^([0-9]|1[0-9]|2[0-3])$ ]]; do
-    read -rp "  → moet 0-23 zijn, opnieuw invoeren: " CRON_HOUR
+    wt_msg "Ongeldig" "Moet een getal tussen 0 en 23 zijn."
+    CRON_HOUR="$(wt_input "Scheduling (1/2)" "Uur voor dagelijkse run (0-23):" "2")"
+    CRON_HOUR="${CRON_HOUR:-2}"
 done
 
-read -rp "Minuut (0-59) [0]: " CRON_MINUTE
+CRON_MINUTE="$(wt_input "Scheduling (2/2)" "Minuut (0-59):" "0")"
 CRON_MINUTE="${CRON_MINUTE:-0}"
 while [[ ! "$CRON_MINUTE" =~ ^([0-9]|[1-5][0-9])$ ]]; do
-    read -rp "  → moet 0-59 zijn, opnieuw invoeren: " CRON_MINUTE
+    wt_msg "Ongeldig" "Moet een getal tussen 0 en 59 zijn."
+    CRON_MINUTE="$(wt_input "Scheduling (2/2)" "Minuut (0-59):" "0")"
+    CRON_MINUTE="${CRON_MINUTE:-0}"
 done
 
 cat > "$CRON_FILE" <<EOF
@@ -171,7 +212,6 @@ $CRON_MINUTE $CRON_HOUR * * * root $INSTALL_DIR/run_all_clients.sh -c $INSTALL_D
 EOF
 chmod 0644 "$CRON_FILE"
 chown root:root "$CRON_FILE"
-echo "✅ Cronjob geïnstalleerd: dagelijks om $(printf '%02d:%02d' "$CRON_HOUR" "$CRON_MINUTE") ($CRON_FILE)."
 
 # ---------------------------------------------------------------------------
 # Logrotate
@@ -186,19 +226,33 @@ $LOG_DIR/run.log {
     notifempty
 }
 EOF
-echo "✅ Logrotate config geplaatst: $LOGROTATE_FILE"
 
 # ---------------------------------------------------------------------------
 # Klaar
 # ---------------------------------------------------------------------------
 
-echo ""
+itglue_summary="niet geconfigureerd (alleen lokale backup)"
+if [[ -z "$SKIP_CONFIG" && "$ITGLUE_API_KEY" != "-" ]]; then
+    itglue_summary="ingesteld, document ID $ITGLUE_DOCUMENT_ID"
+fi
+
+wt_msg "Installatie voltooid" "Scripts:    $INSTALL_DIR
+Config:     $CONFIG_FILE
+Logs:       $LOG_DIR/run.log
+Cron:       dagelijks om $(printf '%02d:%02d' "$CRON_HOUR" "$CRON_MINUTE") ($CRON_FILE)
+IT Glue:    $itglue_summary
+
+Handmatig testen:
+sudo $INSTALL_DIR/run_all_clients.sh -c $CONFIG_FILE"
+
+clear
 echo "=================================================="
 echo "Installatie voltooid."
 echo "  Scripts:    $INSTALL_DIR"
 echo "  Config:     $CONFIG_FILE"
 echo "  Logs:       $LOG_DIR/run.log"
-echo "  Cron:       $CRON_FILE"
+echo "  Cron:       dagelijks om $(printf '%02d:%02d' "$CRON_HOUR" "$CRON_MINUTE") ($CRON_FILE)"
+echo "  IT Glue:    $itglue_summary"
 echo ""
 echo "Handmatig testen:"
 echo "  sudo $INSTALL_DIR/run_all_clients.sh -c $CONFIG_FILE"
